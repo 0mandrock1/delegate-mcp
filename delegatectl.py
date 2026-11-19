@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""Local-only owner CLI; activation secrets never appear on stdout or in argv."""
+"""Local-only owner CLI; by design prints a one-use password for copy/paste."""
 from __future__ import annotations
 import argparse
 import os
 import subprocess
 import time
 import pwd
+import shutil
 
-from delegate import DB_PATH, PUBLIC_URL, audit, create_grant, db_connect, init_store, iso, workspace, grant_user
+from delegate import PUBLIC_URL, ACTIVATE_URL, audit, create_grant, db_connect, init_store, iso, workspace, grant_user
+from prompt import render_grant_prompt
 
 CRED_SECTION = 'delegate-mcp'
-ACTIVATE_URL = 'https://mandrock-ssh.duckdns.org/delegate/activate'
+CRED_BIN = shutil.which('cred')
+AGENTS_PATH = os.environ.get('DELEGATE_AGENTS_PATH', '/etc/delegate-mcp/AGENTS.md')
 
 
 def set_cred(key: str, value: str) -> None:
-    done = subprocess.run(['/usr/local/bin/cred', 'set', CRED_SECTION, key, '--stdin'],
+    if CRED_BIN is None:
+        return
+    done = subprocess.run([CRED_BIN, 'set', CRED_SECTION, key, '--stdin'],
                           input=value, text=True, capture_output=True, timeout=30)
     if done.returncode:
         raise RuntimeError('cred rejected the write to ' + key)
@@ -44,8 +49,17 @@ def grant(args: argparse.Namespace) -> None:
         audit('grant_credential_write_failed', grant_id=grant_id, mode=args.mode)
         raise
     print(f'Grant created: id={grant_id} mode={args.mode} activate_before={iso(deadline)}')
-    print('Credentials stored in: cred delegate-mcp (ENDPOINT, ACTIVATE_URL, PASSWORD)')
+    if CRED_BIN:
+        print('Credentials stored in: cred delegate-mcp (ENDPOINT, ACTIVATE_URL, PASSWORD)')
+    else:
+        print('cred not installed; save the one-time prompt below securely because it cannot be retrieved.')
     print('The PASSWORD is single-use; the returned session token expires independently.')
+    print('\n===== COPY / PASTE TO EXTERNAL AGENT =====\n')
+    print(render_grant_prompt(mode=args.mode, endpoint=PUBLIC_URL, activation_url=ACTIVATE_URL,
+                              password=password, grant_id=grant_id, activation_deadline=iso(deadline) or '',
+                              session_seconds=args.session_ttl or (900 if args.mode == 'root' else 1800),
+                              agents_path=AGENTS_PATH), end='')
+    print('===== END OF ONE-TIME PROMPT =====')
 
 
 def list_grants(_: argparse.Namespace) -> None:

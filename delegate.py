@@ -24,14 +24,16 @@ from urllib.parse import urlsplit
 DB_PATH = Path(os.environ.get('DELEGATE_DB', '/var/lib/delegate-mcp/state.db'))
 AUDIT_PATH = Path(os.environ.get('DELEGATE_AUDIT', '/var/log/delegate-mcp/audit.jsonl'))
 WORKSPACE_ROOT = Path(os.environ.get('DELEGATE_WORKSPACES', '/data/delegate-workspaces'))
-PUBLIC_URL = 'https://mandrock-ssh.duckdns.org/delegate/mcp'
+PUBLIC_URL = os.environ.get('DELEGATE_PUBLIC_URL', 'http://127.0.0.1:3549/delegate/mcp').rstrip('/')
+ROUTE_PREFIX = urlsplit(PUBLIC_URL).path.rsplit('/', 1)[0]
+ACTIVATE_URL = PUBLIC_URL.rsplit('/', 1)[0] + '/activate'
 PORT = int(os.environ.get('DELEGATE_PORT', '3549'))
 MAX_BODY = 15 * 1024 * 1024
 MAX_FILE = 10 * 1024 * 1024
 MAX_OUTPUT = 50_000
 MAX_CALLS = 300
-ALLOWED_UNITS = {'nginx', 'python-admin', 'kb-api', 'mandrock-ssh-mcp'}
-RESTARTABLE_UNITS = {'nginx', 'python-admin', 'kb-api'}
+ALLOWED_UNITS = {part.strip() for part in os.environ.get('DELEGATE_ALLOWED_UNITS', 'nginx').split(',') if part.strip()}
+RESTARTABLE_UNITS = {part.strip() for part in os.environ.get('DELEGATE_RESTARTABLE_UNITS', '').split(',') if part.strip()} & ALLOWED_UNITS
 AUDIT_LOCK = threading.Lock()
 FAIL_LOCK = threading.Lock()
 FAILED_ACTIVATIONS: dict[str, list[float]] = {}
@@ -447,23 +449,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
-        if path == '/delegate/health':
+        if path == ROUTE_PREFIX + '/health':
             return self.respond(200, {'status': 'ok', 'service': 'delegate-mcp'})
-        if path == '/delegate/info':
+        if path == ROUTE_PREFIX + '/info':
             return self.respond(200, {'mcp_endpoint': PUBLIC_URL,
-                                      'activation_endpoint': 'https://mandrock-ssh.duckdns.org/delegate/activate',
+                                      'activation_endpoint': ACTIVATE_URL,
                                       'flow': 'POST password to activation_endpoint; use returned access_token as MCP Bearer',
                                       'protocol': 'Streamable HTTP, stateless, POST'})
-        return self.respond(405 if path == '/delegate/mcp' else 404, {'error': 'not_found'})
+        return self.respond(405 if path == ROUTE_PREFIX + '/mcp' else 404, {'error': 'not_found'})
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        if path not in ('/delegate/activate', '/delegate/mcp'):
+        if path not in (ROUTE_PREFIX + '/activate', ROUTE_PREFIX + '/mcp'):
             return self.respond(404, {'error': 'not_found'})
         # Reject browser-origin calls: this API is intended for server-side agents.
         if self.headers.get('Origin'):
             return self.respond(403, {'error': 'browser_origin_not_supported'})
-        if path == '/delegate/mcp' and authorize(self.bearer()) is None:
+        if path == ROUTE_PREFIX + '/mcp' and authorize(self.bearer()) is None:
             return self.respond(401, {'error': 'unauthorized'})
         try:
             payload = self.read_payload()
@@ -471,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('object expected')
         except ValueError as exc:
             return self.respond(400, {'error': str(exc)})
-        if path == '/delegate/activate':
+        if path == ROUTE_PREFIX + '/activate':
             status, result = activate(payload.get('password', ''), self.client_ip())
             return self.respond(status, result)
         token = self.bearer()

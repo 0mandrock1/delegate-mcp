@@ -6,9 +6,10 @@ After=network.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/root/projects/infra/delegate-mcp
-ExecStart=/usr/bin/python3 /root/projects/infra/delegate-mcp/delegate.py
+WorkingDirectory=/opt/delegate-mcp
+ExecStart=/usr/bin/python3 /opt/delegate-mcp/delegate.py
 Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/delegate-mcp/config.env
 Restart=on-failure
 RestartSec=3
 UMask=0077

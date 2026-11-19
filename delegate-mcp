@@ -1,2 +1,8 @@
 #!/bin/sh
-exec /usr/bin/python3 /root/projects/infra/delegate-mcp/delegatectl.py "$@"
+# The local owner CLI and systemd service must resolve the same public endpoint.
+if [ -r /etc/delegate-mcp/config.env ]; then
+    set -a
+    . /etc/delegate-mcp/config.env
+    set +a
+fi
+exec /usr/bin/python3 /opt/delegate-mcp/delegatectl.py "$@"
