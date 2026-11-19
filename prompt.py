@@ -38,3 +38,42 @@ Connect:
 
 If activation fails because the password expired or was used, ask the owner for a fresh grant. Never attempt to bypass authorization.
 '''
+
+
+def render_rest_grant_prompt(*, mode: str, rest_endpoint: str, activation_url: str,
+                             password: str, grant_id: str, activation_deadline: str,
+                             session_seconds: int, agents_path: str) -> str:
+    assert mode in ('operator', 'root')
+    privilege = (
+        'Operator: restricted Unix user for this grant. System operations only via the allowlisted privileged_op route.'
+        if mode == 'operator' else
+        'Root: full system privileges. Only perform actions explicitly requested by the owner.'
+    )
+    return f'''Temporary HTTPS REST access to the owner's Linux VPS. Use only for the task given in this conversation.
+
+CHECK FIRST: You must have a tool for making HTTPS POST requests with JSON and Authorization headers. Web search and passive browsing are not enough. If no such tool is available, say so and stop. An endpoint cannot give your chat missing HTTP capabilities.
+
+REST API base: {rest_endpoint}
+Activation endpoint: {activation_url}
+One-time password: {password}
+Grant ID: {grant_id}
+Mode: {mode}
+Activate before (UTC): {activation_deadline}
+Session lifetime: {session_seconds // 60} minutes
+Host instructions path: {agents_path}
+
+1. POST JSON to the activation endpoint: {{"password":"<password from above>"}}. Use HTTPS only. This can succeed only once.
+2. The response includes access_token. Send Authorization: Bearer <access_token> with all following calls. Do not put credentials in URLs or logs.
+3. FIRST operation: POST JSON {{"command":"cat {agents_path}"}} to {rest_endpoint}/exec. Follow the returned AGENTS.md rules as applicable.
+4. REST operations, all returning JSON:
+   POST {rest_endpoint}/exec : {{"command":"pwd","timeout_ms":30000}}
+   POST {rest_endpoint}/upload : {{"path":"/absolute/path","content_base64":"..."}}
+   POST {rest_endpoint}/download : {{"path":"/absolute/path"}}
+   POST {rest_endpoint}/privileged_op : {{"action":"service_status","unit":"nginx"}}
+   POST {rest_endpoint}/session_info : {{}}
+   POST {rest_endpoint}/finish : {{}}
+   GET {rest_endpoint}/tools or {rest_endpoint}/session (Bearer token required)
+5. {privilege} An HTTP 200 with a nonzero exit_code means the command failed. Verify the requested changes, then POST /finish with {{}} to revoke access.
+
+Never claim connection or successful actions unless an actual tool produced the response. If HTTP is unavailable, request an HTTP-capable agent instead.
+'''

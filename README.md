@@ -2,7 +2,7 @@
 
 **One-time access grants for external AI agents, without giving them your permanent SSH or MCP credential.**
 
-`delegate-mcp` is a small self-hosted Linux MCP gateway. The owner generates a single-use password and receives a **ready-to-paste agent handoff** containing the endpoint, activation procedure, expiry, permissions, and location of the host's `AGENTS.md`. The agent exchanges that password for a short-lived bearer token and then calls MCP tools over HTTPS.
+`delegate-mcp` is a small self-hosted Linux MCP gateway. The owner generates a single-use password and receives a **ready-to-paste agent handoff** containing the endpoint, activation procedure, expiry, permissions, and location of the host's `AGENTS.md`. The agent exchanges that password for a short-lived bearer token and then calls either MCP tools or plain JSON REST endpoints over HTTPS.
 
 **Maturity:** personal-server reference implementation, not an audited security product. The gateway can execute commands as root when explicitly granted. Read [Security model](#security-model) before exposing it to the internet.
 
@@ -15,7 +15,7 @@ A permanent, full-access MCP connector is convenient for *your own* agent. It is
 - One-time password redemption, atomic even under concurrent activation requests (SQLite `BEGIN IMMEDIATE`). Stored passwords and session tokens are SHA-256 digests, not plaintext.
 - `operator` grants: a **new unprivileged Unix identity per grant** and a private workspace; fixed allowlisted privileged operations only.
 - `root` grants: explicit opt-in for administrative work, with a shorter default session lifetime.
-- Owner CLI prints a ready-to-send **mini-prompt**, including a request to read the canonical `AGENTS.md` as the agent's first remote action.
+- Owner CLI prints separate ready-to-send **MCP** or **REST** mini-prompts, including a request to read the canonical `AGENTS.md` as the agent's first remote action.
 - Session expiry, manual revocation (`finish` or CLI), process-group termination on revoke/timeout, call count limits, limited activation attempts, JSONL audit metadata.
 - Python standard library only; no Docker or additional Python packages required. Optional integration with the owner's `cred` CLI for storing the issued password and URLs.
 
@@ -53,9 +53,13 @@ The canonical rules file does **not** ship with this repository. Provide your ow
 ```bash
 sudo delegate-mcp grant --mode operator
 sudo delegate-mcp grant --mode root
+
+# Plain REST, for agents with HTTP tools but no MCP client:
+sudo delegate-mcp grant-rest --mode operator
+sudo delegate-mcp grant-rest --mode root
 ```
 
-Each command prints a **copy/paste prompt with the actual one-time password**, MCP URL, activation URL, mode, deadline, session duration, and `AGENTS.md` path. It does **not** print the newly exchanged bearer token, which is generated later during activation. Treat terminal output and shell scrollback as sensitive. If the optional `cred` CLI is installed and supports `cred set <section> <key> --stdin`, the latest password and URLs are also stored under `cred delegate-mcp`.
+Each command prints a **copy/paste prompt with the actual one-time password**, suitable endpoint, activation URL, mode, deadline, session duration, and `AGENTS.md` path. It does **not** print the newly exchanged bearer token, which is generated later during activation. Treat terminal output and shell scrollback as sensitive. If the optional `cred` CLI is installed and supports `cred set <section> <key> --stdin`, the latest password and URLs are also stored under `cred delegate-mcp` (`ENDPOINT` for the selected transport, `MCP_ENDPOINT`, `REST_ENDPOINT`, `ACTIVATE_URL`, `PASSWORD`, `TRANSPORT`, `MODE` and grant metadata).
 
 ```bash
 sudo delegate-mcp list
@@ -72,9 +76,32 @@ The newest grant supersedes **pending** unactivated grants, but previously activ
 4. The agent uses `Authorization: Bearer <access_token>` for stateless MCP JSON-RPC POSTs to `https://example.org/delegate/mcp`.
 5. The agent initializes MCP, lists tools, reads the canonical `AGENTS.md` using `exec`, performs the owner's task, verifies results, and calls `finish` to revoke its session.
 
+### Plain JSON REST fallback (no MCP client)
+
+To give an agent that can issue HTTP requests, but not MCP, a direct JSON interface, run `delegate-mcp grant-rest --mode operator` or explicitly `--mode root`. **Both `grant` and `grant-rest` create the same kind of one-time grant** and share the same activation endpoint, session token, permissions, audit log, and revocation. Generating a new grant revokes older *unactivated* grants, regardless of transport. An already activated bearer can use both interfaces until it expires or is revoked.
+
+Endpoint: `https://example.org/delegate/api` (derived from `DELEGATE_PUBLIC_URL`). All operations require `Authorization: Bearer <access_token>`; do not put credentials in URLs or query strings.
+
+| Method | Path | JSON body | Result |
+|---|---|---|---|
+| `GET` | `/delegate/api/tools` | none | Names of available tool operations |
+| `GET` | `/delegate/api/session` | none | Session mode, workspace, expiration |
+| `POST` | `/delegate/api/exec` | `{"command":"pwd", "timeout_ms":30000}` | `stdout`, `stderr`, `exit_code` |
+| `POST` | `/delegate/api/upload` | `{"path":"/absolute/file","content_base64":"..."}` | File write result |
+| `POST` | `/delegate/api/download` | `{"path":"/absolute/file"}` | Base64 contents, size |
+| `POST` | `/delegate/api/privileged_op` | `{"action":"service_status","unit":"nginx"}` | Allowlisted broker action |
+| `POST` | `/delegate/api/session_info` | `{}` | Session information |
+| `POST` | `/delegate/api/finish` | `{}` | Revokes token and closes the session |
+
+POST responses are JSON `{ "ok": true, "result": ... }`. Input errors return HTTP 400; missing/expired token returns 401; browser-origin POSTs return 403. A tool that returns a nonzero `exit_code` is a failed shell operation **even when HTTP is 200 and `ok` is true**. `ok` means the API dispatched the tool successfully, not that the tool's command succeeded. Secrets should never appear in audit logs.
+
+The activation endpoint is **unchanged**: HTTPS POST `/delegate/activate` with `{"password":"..."}` returns `access_token`, `rest_endpoint`, `mcp_endpoint`, and expiration metadata. The generated REST handoff describes this process and instructs the agent to read `AGENTS.md` using its first `/exec` request.
+
+**Limit:** REST is useful only when the receiving chat has an actual HTTP tool capable of making POST requests with JSON and Authorization headers. Duck.ai without such tools still cannot connect. This is a client capability issue, not an HTTPS-routing issue.
+
 **Client capability preflight:** The generated handoff asks the receiving agent to verify that its chat runtime actually supports authenticated HTTPS POST/MCP calls. Search or passive browsing cannot issue commands; adding another HTTPS endpoint on this server will not grant outbound network capabilities to a chat UI. Duck.ai is one example of a chat frontend that may lack the required general-purpose HTTP/MCP integration.
 
-**Client compatibility:** implements the stateless Streamable HTTP JSON-RPC subset used for MCP `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`. A client must be capable of performing password activation and supplying a returned Bearer header; **pasting only the URL is not enough**. Automatic OAuth client registration or turnkey integration into every MCP host is not provided.
+**MCP client compatibility:** implements the stateless Streamable HTTP JSON-RPC subset used for MCP `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`. A client must be capable of performing password activation and supplying a returned Bearer header; **pasting only the URL is not enough**. Automatic OAuth client registration or turnkey integration into every MCP host is not provided.
 
 ## Modes and tools
 
@@ -114,12 +141,12 @@ python3 -m unittest discover -s tests -v
 python3 -m py_compile delegate.py delegatectl.py prompt.py
 ```
 
-Tests include concurrent single-redemption, TTL/call limits, operator shell and file permissions, broker denials, and prompt composition. Some tests require a local Unix user named `delegate-mcp` and must run on a Linux host where process credential changes are permitted.
+Tests include concurrent single-redemption, TTL/call limits, REST HTTP requests through a local server, cross-protocol bearer and revocation, operator shell and file permissions, broker denials, and both prompt compositions. Some tests require a local Unix user named `delegate-mcp` and must run on a Linux host where process credential changes are permitted.
 
 ## Layout
 
 - `delegate.py`: HTTP server, SQLite grants, MCP JSON-RPC, subprocess and fixed privilege broker.
-- `delegatectl.py`, `delegate-mcp`, `prompt.py`: local issuance/revocation CLI and templated handoff.
+- `delegatectl.py`, `delegate-mcp`, `prompt.py`: local issuance/revocation CLI and separate MCP/REST handoffs.
 - `deploy/`: systemd unit, example configuration and nginx location snippet.
 - `tests/`: unit and low-level behavioral checks.
 

@@ -8,8 +8,8 @@ import time
 import pwd
 import shutil
 
-from delegate import PUBLIC_URL, ACTIVATE_URL, audit, create_grant, db_connect, init_store, iso, workspace, grant_user
-from prompt import render_grant_prompt
+from delegate import PUBLIC_URL, REST_URL, ACTIVATE_URL, audit, create_grant, db_connect, init_store, iso, workspace, grant_user
+from prompt import render_grant_prompt, render_rest_grant_prompt
 
 CRED_SECTION = 'delegate-mcp'
 CRED_BIN = shutil.which('cred')
@@ -26,6 +26,8 @@ def set_cred(key: str, value: str) -> None:
 
 
 def grant(args: argparse.Namespace) -> None:
+    transport = getattr(args, 'transport', 'mcp')
+    endpoint = REST_URL if transport == 'rest' else PUBLIC_URL
     grant_id, password, deadline = create_grant(args.mode, args.activate_ttl, args.session_ttl)
     try:
         if args.mode == 'operator':
@@ -37,7 +39,10 @@ def grant(args: argparse.Namespace) -> None:
             w.mkdir(mode=0o700, parents=True, exist_ok=False)
             os.chmod(w, 0o700)
             os.chown(w, owner.pw_uid, owner.pw_gid)
-        set_cred('ENDPOINT', PUBLIC_URL)
+        set_cred('ENDPOINT', endpoint)
+        set_cred('MCP_ENDPOINT', PUBLIC_URL)
+        set_cred('REST_ENDPOINT', REST_URL)
+        set_cred('TRANSPORT', transport)
         set_cred('ACTIVATE_URL', ACTIVATE_URL)
         set_cred('MODE', args.mode)
         set_cred('EXPIRES_AT', iso(deadline) or '')
@@ -55,10 +60,14 @@ def grant(args: argparse.Namespace) -> None:
         print('cred not installed; save the one-time prompt below securely because it cannot be retrieved.')
     print('The PASSWORD is single-use; the returned session token expires independently.')
     print('\n===== COPY / PASTE TO EXTERNAL AGENT =====\n')
-    print(render_grant_prompt(mode=args.mode, endpoint=PUBLIC_URL, activation_url=ACTIVATE_URL,
-                              password=password, grant_id=grant_id, activation_deadline=iso(deadline) or '',
-                              session_seconds=args.session_ttl or (900 if args.mode == 'root' else 1800),
-                              agents_path=AGENTS_PATH), end='')
+    details = dict(mode=args.mode, activation_url=ACTIVATE_URL,
+                   password=password, grant_id=grant_id, activation_deadline=iso(deadline) or '',
+                   session_seconds=args.session_ttl or (900 if args.mode == 'root' else 1800),
+                   agents_path=AGENTS_PATH)
+    if transport == 'rest':
+        print(render_rest_grant_prompt(rest_endpoint=REST_URL, **details), end='')
+    else:
+        print(render_grant_prompt(endpoint=PUBLIC_URL, **details), end='')
     print('===== END OF ONE-TIME PROMPT =====')
 
 
@@ -89,11 +98,12 @@ def main() -> None:
         raise SystemExit('Only local root may issue or revoke grants')
     parser = argparse.ArgumentParser(prog='delegate-mcp')
     sub = parser.add_subparsers(dest='command', required=True)
-    create = sub.add_parser('grant', help='Issue one-use activation password into cred')
-    create.add_argument('--mode', choices=('operator', 'root'), default='operator')
-    create.add_argument('--activate-ttl', type=int, default=600)
-    create.add_argument('--session-ttl', type=int)
-    create.set_defaults(fn=grant)
+    for command, transport in [('grant', 'mcp'), ('grant-rest', 'rest')]:
+        create = sub.add_parser(command, help=f'Issue a one-use {transport.upper()} agent handoff')
+        create.add_argument('--mode', choices=('operator', 'root'), default='operator')
+        create.add_argument('--activate-ttl', type=int, default=600)
+        create.add_argument('--session-ttl', type=int)
+        create.set_defaults(fn=grant, transport=transport)
     sub.add_parser('list').set_defaults(fn=list_grants)
     rev = sub.add_parser('revoke')
     rev.add_argument('id')

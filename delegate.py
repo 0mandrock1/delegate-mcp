@@ -27,6 +27,8 @@ WORKSPACE_ROOT = Path(os.environ.get('DELEGATE_WORKSPACES', '/data/delegate-work
 PUBLIC_URL = os.environ.get('DELEGATE_PUBLIC_URL', 'http://127.0.0.1:3549/delegate/mcp').rstrip('/')
 ROUTE_PREFIX = urlsplit(PUBLIC_URL).path.rsplit('/', 1)[0]
 ACTIVATE_URL = PUBLIC_URL.rsplit('/', 1)[0] + '/activate'
+REST_URL = PUBLIC_URL.rsplit('/', 1)[0] + '/api'
+REST_PATH = ROUTE_PREFIX + '/api'
 PORT = int(os.environ.get('DELEGATE_PORT', '3549'))
 MAX_BODY = 15 * 1024 * 1024
 MAX_FILE = 10 * 1024 * 1024
@@ -139,7 +141,7 @@ def activate(password: str, ip: str) -> tuple[int, dict[str, object]]:
         audit('activated', grant_id=grant['id'], mode=grant['mode'], ip=ip, session_deadline=iso(deadline))
         return 200, {'access_token': token, 'token_type': 'Bearer', 'expires_in': grant['session_ttl'],
                      'mode': grant['mode'], 'grant_id': grant['id'], 'expires_at': iso(deadline),
-                     'mcp_endpoint': PUBLIC_URL}
+                     'mcp_endpoint': PUBLIC_URL, 'rest_endpoint': REST_URL}
     finally:
         db.close()
 
@@ -449,23 +451,37 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
+        if path == REST_PATH + '/tools':
+            if authorize(self.bearer()) is None:
+                return self.respond(401, {'error': 'unauthorized_or_expired'})
+            return self.respond(200, {'tools': [tool['name'] for tool in TOOLS]})
+        if path == REST_PATH + '/session':
+            grant = authorize(self.bearer())
+            if grant is None:
+                return self.respond(401, {'error': 'unauthorized_or_expired'})
+            return self.respond(200, {'grant_id': grant['id'], 'mode': grant['mode'],
+                                      'expires_at': iso(grant['session_deadline']),
+                                      'workspace': str(workspace(grant['id'])) if grant['mode'] == 'operator' else '/root'})
         if path == ROUTE_PREFIX + '/health':
             return self.respond(200, {'status': 'ok', 'service': 'delegate-mcp'})
         if path == ROUTE_PREFIX + '/info':
             return self.respond(200, {'mcp_endpoint': PUBLIC_URL,
                                       'activation_endpoint': ACTIVATE_URL,
-                                      'flow': 'POST password to activation_endpoint; use returned access_token as MCP Bearer',
-                                      'protocol': 'Streamable HTTP, stateless, POST'})
+                                      'rest_endpoint': REST_URL,
+                                      'flow': 'POST password to activation_endpoint; use access_token as Bearer for MCP or REST',
+                                      'protocol': 'Streamable HTTP MCP (JSON-RPC) and JSON REST'})
         return self.respond(405 if path == ROUTE_PREFIX + '/mcp' else 404, {'error': 'not_found'})
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        if path not in (ROUTE_PREFIX + '/activate', ROUTE_PREFIX + '/mcp'):
+        rest_tools = {tool['name'] for tool in TOOLS}
+        rest_name = path[len(REST_PATH) + 1:] if path.startswith(REST_PATH + '/') else None
+        if path not in (ROUTE_PREFIX + '/activate', ROUTE_PREFIX + '/mcp') and rest_name not in rest_tools:
             return self.respond(404, {'error': 'not_found'})
         # Reject browser-origin calls: this API is intended for server-side agents.
         if self.headers.get('Origin'):
             return self.respond(403, {'error': 'browser_origin_not_supported'})
-        if path == ROUTE_PREFIX + '/mcp' and authorize(self.bearer()) is None:
+        if path != ROUTE_PREFIX + '/activate' and authorize(self.bearer()) is None:
             return self.respond(401, {'error': 'unauthorized'})
         try:
             payload = self.read_payload()
@@ -477,6 +493,25 @@ class Handler(BaseHTTPRequestHandler):
             status, result = activate(payload.get('password', ''), self.client_ip())
             return self.respond(status, result)
         token = self.bearer()
+        if rest_name is not None:
+            grant = authorize(token, increment=True)
+            if grant is None:
+                return self.respond(401, {'error': 'unauthorized_or_expired'})
+            try:
+                value = call_tool(grant, rest_name, payload, self.client_ip())
+                return self.respond(200, {'ok': True, 'result': value})
+            except (ValueError, TypeError) as exc:
+                audit('rest_tool_rejected', grant_id=grant['id'], mode=grant['mode'],
+                      ip=self.client_ip(), tool=rest_name, error_type=type(exc).__name__)
+                return self.respond(400, {'ok': False, 'error': str(exc)})
+            except PermissionError:
+                audit('rest_tool_denied', grant_id=grant['id'], mode=grant['mode'],
+                      ip=self.client_ip(), tool=rest_name)
+                return self.respond(403, {'ok': False, 'error': 'permission_denied'})
+            except Exception as exc:
+                audit('rest_tool_error', grant_id=grant['id'], mode=grant['mode'],
+                      ip=self.client_ip(), tool=rest_name, error_type=type(exc).__name__)
+                return self.respond(500, {'ok': False, 'error': 'internal_error'})
         if not token:
             return self.respond(401, {'error': 'unauthorized'})
         method = payload.get('method')

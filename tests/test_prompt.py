@@ -63,3 +63,38 @@ class HandoffTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class RestHandoffTests(unittest.TestCase):
+    def test_rest_prompt_is_http_only_operator(self):
+        value = prompt.render_rest_grant_prompt(
+            mode='operator', rest_endpoint='https://example.org/delegate/api',
+            activation_url='https://example.org/delegate/activate',
+            password='unit-test-value', grant_id='dummy-grant',
+            activation_deadline='2026-11-19T16:00:00Z', session_seconds=1800,
+            agents_path='/etc/delegate-mcp/AGENTS.md')
+        for expected in ('unit-test-value', 'POST', 'Authorization: Bearer',
+                         'cat /etc/delegate-mcp/AGENTS.md',
+                         '/delegate/api/exec', '/delegate/api/finish', '30 minutes',
+                         'Web search and passive browsing are not enough'):
+            self.assertIn(expected, value)
+        self.assertNotIn('JSON-RPC POST', value)
+        self.assertNotIn('Root: full system privileges', value)
+
+    def test_rest_prompt_root_and_creds(self):
+        from types import SimpleNamespace
+        sent = {}
+        output = io.StringIO()
+        args = SimpleNamespace(mode='root', activate_ttl=600, session_ttl=60, transport='rest')
+        with (mock.patch.object(delegatectl, 'create_grant', return_value=('fake-grant', 'test-secret', 1795104600)),
+              mock.patch.object(delegatectl, 'set_cred', side_effect=lambda key, val: sent.__setitem__(key, val)),
+              mock.patch.object(delegatectl, 'CRED_BIN', '/usr/local/bin/cred'),
+              contextlib.redirect_stdout(output)):
+            delegatectl.grant(args)
+        self.assertEqual(sent['ENDPOINT'], delegatectl.REST_URL)
+        self.assertEqual(sent['REST_ENDPOINT'], delegatectl.REST_URL)
+        self.assertEqual(sent['MCP_ENDPOINT'], delegatectl.PUBLIC_URL)
+        self.assertEqual(sent['TRANSPORT'], 'rest')
+        self.assertEqual(sent['PASSWORD'], 'test-secret')
+        self.assertIn('Root: full system privileges', output.getvalue())
+        self.assertIn(delegatectl.REST_URL + '/exec', output.getvalue())
+        self.assertIn('test-secret', output.getvalue())
