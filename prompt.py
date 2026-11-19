@@ -1,8 +1,6 @@
 """Human copy/paste grant handoff. Never log or persist the rendered prompt."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 
 def render_grant_prompt(*, mode: str, endpoint: str, activation_url: str,
                         password: str, grant_id: str, activation_deadline: str,
@@ -18,6 +16,9 @@ def render_grant_prompt(*, mode: str, endpoint: str, activation_url: str,
     )
     return f'''You have one temporary, explicitly issued MCP grant to an owner-controlled Linux VPS.
 Your task will be supplied in this conversation. Do not assume or invent one.
+
+REQUIRED CAPABILITY CHECK (before trying to activate):
+You must actually have a network tool or a configured MCP client capable of making arbitrary HTTPS POST requests, reading JSON responses, and sending Authorization headers. A web-search tool or the ability to read ordinary web pages is NOT enough. If this chat cannot make authenticated POST requests, explicitly say so and stop. Do not invent completed work, claim to be connected, ask the server to call you back, or propose GET URLs with embedded passwords. Ask the owner to use an MCP/HTTP-capable agent runtime instead.
 
 MCP endpoint: {endpoint}
 Activation URL: {activation_url}

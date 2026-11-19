@@ -22,7 +22,9 @@ class HandoffTests(unittest.TestCase):
                          'https://gateway.example/delegate/activate',
                          'test-only-secret-not-a-real-password',
                          '/etc/agents/AGENTS.md', '30 minutes', 'finish tool',
-                         'FIRST remote action', 'unprivileged'):
+                         'FIRST remote action', 'unprivileged',
+                         'REQUIRED CAPABILITY CHECK', 'A web-search tool',
+                         'HTTPS POST requests'):
             self.assertIn(expected, data)
         self.assertNotIn('ROOT: full VPS administration', data)
         self.assertNotIn('mandrock-ssh.duckdns.org', data)

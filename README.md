@@ -72,6 +72,8 @@ The newest grant supersedes **pending** unactivated grants, but previously activ
 4. The agent uses `Authorization: Bearer <access_token>` for stateless MCP JSON-RPC POSTs to `https://example.org/delegate/mcp`.
 5. The agent initializes MCP, lists tools, reads the canonical `AGENTS.md` using `exec`, performs the owner's task, verifies results, and calls `finish` to revoke its session.
 
+**Client capability preflight:** The generated handoff asks the receiving agent to verify that its chat runtime actually supports authenticated HTTPS POST/MCP calls. Search or passive browsing cannot issue commands; adding another HTTPS endpoint on this server will not grant outbound network capabilities to a chat UI. Duck.ai is one example of a chat frontend that may lack the required general-purpose HTTP/MCP integration.
+
 **Client compatibility:** implements the stateless Streamable HTTP JSON-RPC subset used for MCP `initialize`, `notifications/initialized`, `ping`, `tools/list`, and `tools/call`. A client must be capable of performing password activation and supplying a returned Bearer header; **pasting only the URL is not enough**. Automatic OAuth client registration or turnkey integration into every MCP host is not provided.
 
 ## Modes and tools
